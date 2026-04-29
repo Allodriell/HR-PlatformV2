@@ -3,6 +3,7 @@ import { ApiError, assistantApi, candidatesApi } from "./api";
 import type { Candidate, CandidateDetailResponse } from "./api";
 import { CandidateCard } from "./components/CandidateCard";
 import { InputField } from "./components/InputField";
+import { ArrowLeftIcon } from "./components/icons/ArrowLeftIcon";
 import { CopyIcon } from "./components/icons/CopyIcon";
 import { EditIcon } from "./components/icons/EditIcon";
 import { TrashIcon } from "./components/icons/TrashIcon";
@@ -14,6 +15,8 @@ type CandidateCardViewModel = {
   name: string;
   tags: readonly string[];
 };
+
+type LoadingStage = "idle" | "thinking" | "searching";
 
 function toCandidateCard(candidate: Candidate): CandidateCardViewModel {
   const metaParts = [candidate.headline, candidate.location].filter(Boolean);
@@ -159,6 +162,7 @@ export default function App() {
   >([]);
   const [highlightedResumeQuote, setHighlightedResumeQuote] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [loadingStage, setLoadingStage] = useState<LoadingStage>("idle");
   const [isCandidateLoading, setIsCandidateLoading] = useState(false);
   const [isCandidateQaLoading, setIsCandidateQaLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
@@ -176,11 +180,36 @@ export default function App() {
   const displayedPrompt = submittedPrompt || draftPrompt;
   const hasDraftPrompt = draftPrompt.trim().length > 0;
   const hasDisplayedPrompt = displayedPrompt.trim().length > 0;
+  const canGoBack =
+    mode === "create" ||
+    selectedCandidate !== null ||
+    candidates.length > 0 ||
+    hasDisplayedPrompt ||
+    Boolean(candidateQaAnswer);
 
   const switchMode = (nextMode: "search" | "create") => {
     setMode(nextMode);
     setErrorMessage("");
     setCreateMessage("");
+  };
+
+  const handleBack = () => {
+    if (selectedCandidate) {
+      setSelectedCandidate(null);
+      setCandidateQaAnswer("");
+      setCandidateQaHistory([]);
+      setHighlightedResumeQuote("");
+      setIsCandidateQaLoading(false);
+      setErrorMessage("");
+      return;
+    }
+
+    if (mode === "create") {
+      switchMode("search");
+      return;
+    }
+
+    handleDelete();
   };
 
   const handleSubmit = async (value: string) => {
@@ -238,11 +267,13 @@ export default function App() {
     setQuery("");
     setIsEditingPrompt(false);
     setIsLoading(true);
+    setLoadingStage("thinking");
     setErrorMessage("");
 
     try {
       const response = await assistantApi.sendPrompt({
         current_prompt: currentPrompt || undefined,
+        decide_only: true,
         message,
         mode: "agent",
       });
@@ -265,15 +296,16 @@ export default function App() {
       setSubmittedPrompt(normalizedQuery);
       setDraftPrompt("");
       setAgentPrompt("Добрый день, кого ищем сегодня?");
-      setCandidates(
-        response.search?.candidates.map((candidate) => ({
-          id: String(candidate.candidate_id),
-          fullName: candidate.full_name,
-          headline: candidate.role,
-          score: candidate.total_score,
-          tags: candidate.tags,
-        })) ?? [],
-      );
+      setLoadingStage("searching");
+
+      const searchResponse = await candidatesApi.search({
+        limit: 10,
+        query: normalizedQuery,
+      });
+      const finalQuery = searchResponse.meta?.normalized_query?.trim() || normalizedQuery;
+
+      setSubmittedPrompt(finalQuery);
+      setCandidates(searchResponse.items);
       setSelectedCandidate(null);
       setCandidateQaAnswer("");
       setCandidateQaHistory([]);
@@ -285,6 +317,7 @@ export default function App() {
       setErrorMessage(message);
     } finally {
       setIsLoading(false);
+      setLoadingStage("idle");
     }
   };
 
@@ -299,6 +332,7 @@ export default function App() {
     setSubmittedPrompt(normalizedForcedQuery);
     setQuery("");
     setIsLoading(true);
+    setLoadingStage("searching");
     setErrorMessage("");
 
     try {
@@ -306,6 +340,9 @@ export default function App() {
         limit: 10,
         query: normalizedForcedQuery,
       });
+      const finalQuery = response.meta?.normalized_query?.trim() || normalizedForcedQuery;
+
+      setSubmittedPrompt(finalQuery);
       setCandidates(response.items);
       setSelectedCandidate(null);
       setCandidateQaAnswer("");
@@ -320,6 +357,7 @@ export default function App() {
       setErrorMessage(message);
     } finally {
       setIsLoading(false);
+      setLoadingStage("idle");
     }
   };
 
@@ -340,6 +378,7 @@ export default function App() {
     setDraftPrompt("");
     setAgentPrompt("Добрый день, кого ищем сегодня?");
     setIsEditingPrompt(false);
+    setLoadingStage("idle");
     setCandidates([]);
     setSelectedCandidate(null);
     setCandidateQaAnswer("");
@@ -424,22 +463,39 @@ export default function App() {
         mode === "create" ? "search-screen--create" : "",
       ].join(" ")}
     >
-      <nav aria-label="Режим работы" className="mode-switch">
-        <button
-          className={["mode-switch__button", mode === "search" ? "mode-switch__button--active" : ""].join(" ")}
-          onClick={() => switchMode("search")}
-          type="button"
-        >
-          Поиск
-        </button>
-        <button
-          className={["mode-switch__button", mode === "create" ? "mode-switch__button--active" : ""].join(" ")}
-          onClick={() => switchMode("create")}
-          type="button"
-        >
-          Резюме
-        </button>
-      </nav>
+      <header className="app-header">
+        {canGoBack ? (
+          <button
+            aria-label="Назад"
+            className="back-button"
+            onClick={handleBack}
+            type="button"
+          >
+            <ArrowLeftIcon />
+          </button>
+        ) : (
+          <span aria-hidden="true" className="app-header__spacer" />
+        )}
+
+        <nav aria-label="Режим работы" className="mode-switch">
+          <button
+            className={["mode-switch__button", mode === "search" ? "mode-switch__button--active" : ""].join(" ")}
+            onClick={() => switchMode("search")}
+            type="button"
+          >
+            Поиск
+          </button>
+          <button
+            className={["mode-switch__button", mode === "create" ? "mode-switch__button--active" : ""].join(" ")}
+            onClick={() => switchMode("create")}
+            type="button"
+          >
+            Резюме
+          </button>
+        </nav>
+
+        <span aria-hidden="true" className="app-header__spacer" />
+      </header>
 
       {mode === "create" ? (
         <section className="resume-create">
@@ -510,9 +566,13 @@ export default function App() {
                   text={draftPrompt}
                 />
               ) : null}
-              <h1 className={["search-hero__title", isLoading ? "thinking-text" : ""].join(" ")}>
-                {isLoading ? "Думаю..." : agentPrompt}
-              </h1>
+              {isLoading && loadingStage === "searching" ? (
+                <LoadingState label="Загрузка кандидатов..." />
+              ) : (
+                <h1 className={["search-hero__title", isLoading ? "thinking-text" : ""].join(" ")}>
+                  {isLoading ? "Думаю..." : agentPrompt}
+                </h1>
+              )}
             </header>
           ) : null}
 

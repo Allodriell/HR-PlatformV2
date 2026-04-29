@@ -45,6 +45,7 @@ class AssistantPromptRequest(BaseModel):
     message: str = Field(..., min_length=1)
     mode: str = "chat"
     current_prompt: str = ""
+    decide_only: bool = False
 
 
 app = FastAPI(
@@ -293,6 +294,16 @@ def assistant_messages(payload: AssistantPromptRequest) -> Dict[str, Any]:
             }
 
         query = decision.normalized_query or payload.message
+        if payload.decide_only:
+            return {
+                "action": "search_results",
+                "answer": "",
+                "chips": decision.chips,
+                "conversationId": None,
+                "normalized_query": query,
+                "search": None,
+            }
+
         result = search_candidates(query, top_k=5)
         return {
             "action": "search_results",

@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -39,6 +40,13 @@ SYSTEM_PROMPT = """
 Обязательные правила:
 - Если is_hr_relevant = false, normalized_query должен быть пустой строкой "".
 - Если is_hr_relevant = true, normalized_query должен содержать аккуратно сформулированный запрос на поиск кандидата.
+- normalized_query напрямую используется для векторного поиска по резюме: не добавляй технические
+  пояснения, мета-комментарии и отсутствующие параметры.
+- Не пиши фразы вроде "поиск специалиста", "рекрутинг одного специалиста",
+  "дополнительные требования не указаны", "уровень опыта не указан",
+  "формат занятости не указан", "локация не указана".
+- Не добавляй скобки с тем, чего пользователь не сказал. Если параметр неизвестен,
+  просто не упоминай его.
 - Ответ ДОЛЖЕН быть строго валидным JSON без пояснений до или после.
 """
 
@@ -86,6 +94,53 @@ def _parse_json_safe(text: str) -> dict[str, Any]:
         raise
 
 
+def _clean_normalized_query(value: str) -> str:
+    text = " ".join((value or "").strip().split())
+    if not text:
+        return ""
+
+    meta_terms = (
+        r"не\s+указа",
+        r"уров(?:е|е)нь\s+опыта",
+        r"формат\s+занятости",
+        r"локац",
+        r"дополнительн(?:ые|ых)?\s+(?:требован|услов)",
+        r"поиск\s+специалиста",
+        r"рекрутинг",
+    )
+    meta_pattern = "|".join(meta_terms)
+
+    text = re.sub(
+        rf"\s*\([^)]*(?:{meta_pattern})[^)]*\)",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    noise_patterns = [
+        r"\bпоиск\s+специалиста\b",
+        r"\bрекрутинг\s+одного\s+специалиста\b",
+        r"\bдополнительн(?:ые|ых)?\s+(?:требования|условия|требования/условия)\s+не\s+указан[ыоа]?\b",
+        r"\bуров(?:е|е)нь\s+опыта\s+не\s+указан[ао]?\b",
+        r"\bформат\s+занятости\s+не\s+указан[ао]?\b",
+        r"\bлокац(?:ия|ии|ию)\s+не\s+указан[ао]?\b",
+        r"\bне\s+указан[ыоа]?\b",
+    ]
+    for pattern in noise_patterns:
+        text = re.sub(pattern, "", text, flags=re.IGNORECASE)
+
+    text = re.sub(r"\(([^)]*)\)", r"\1", text)
+    text = re.sub(r"\s+[—-]\s*(?=[,.!?;:]|$)", "", text)
+    text = re.sub(r"\s+[—-]\s+", " — ", text)
+    text = re.sub(r"\(\s*\)", "", text)
+    text = re.sub(r"\s+([,.!?;:])", r"\1", text)
+    text = re.sub(r"([,.!?;:]){2,}", r"\1", text)
+    text = re.sub(r"\s{2,}", " ", text)
+    text = text.strip(" \t\r\n-—,.;:")
+
+    return text
+
+
 def normalize_hr_query(raw_query: str) -> HRQueryNormalizationResult:
     """
     Нормализует HR-запрос и классифицирует его.
@@ -124,7 +179,7 @@ def normalize_hr_query(raw_query: str) -> HRQueryNormalizationResult:
         intent=str(data.get("intent", "nonsense")),
         is_hr_relevant=bool(data.get("is_hr_relevant", False)),
         confidence=float(data.get("confidence", 0.0)),
-        normalized_query=str(data.get("normalized_query", "") or ""),
+        normalized_query=_clean_normalized_query(str(data.get("normalized_query", "") or "")),
         short_explanation=str(data.get("short_explanation", "") or ""),
         request_type=str(data.get("request_type", "unclear")),
     )

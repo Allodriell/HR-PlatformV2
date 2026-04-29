@@ -49,30 +49,60 @@ button {
 
 .search-screen {
   min-height: 100vh;
-  padding: 40px 28px;
+  max-height: 100vh;
+  padding: 24px 48px 48px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  row-gap: 32px;
+  overflow: hidden;
 }
 
 .search-screen--create {
-  display: grid;
   align-content: center;
 }
 
 .search-screen--results {
-  padding: 0;
+  padding: 24px 48px 48px;
+}
+
+.app-header {
+  min-height: 40px;
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) 40px;
+  align-items: center;
+}
+
+.app-header__spacer {
+  width: 40px;
+  height: 40px;
+}
+
+.back-button {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  justify-self: start;
+  background: var(--color-soft-black);
+  color: var(--text-inverse);
+  cursor: pointer;
+}
+
+.back-button .icon {
+  width: 22px;
+  height: 22px;
 }
 
 .mode-switch {
-  position: fixed;
-  top: 24px;
-  left: 50%;
-  z-index: 5;
+  justify-self: center;
   display: inline-flex;
   gap: 8px;
   padding: 5px;
   border: 1px solid var(--color-soft-black);
   border-radius: 999px;
   background: rgb(243 243 246 / 88%);
-  transform: translateX(-50%);
 }
 
 .mode-switch__button {
@@ -90,20 +120,20 @@ button {
 }
 
 .search-layout {
-  min-height: calc(100vh - 80px);
+  min-height: 0;
+  height: 100%;
   display: grid;
   place-items: center;
   transition: justify-items 320ms ease;
 }
 
 .search-layout--results {
-  min-height: 100vh;
-  max-height: 100vh;
+  min-height: 0;
+  max-height: 100%;
   align-items: stretch;
   place-items: stretch;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 0;
-  padding: 64px 48px;
   overflow: hidden;
 }
 
@@ -628,9 +658,10 @@ button {
 
 .resume-create {
   width: min(100%, 760px);
-  margin: 52px auto 0;
+  margin: 0 auto;
   display: grid;
   gap: 14px;
+  align-self: center;
 }
 
 .resume-form {
@@ -955,7 +986,7 @@ button {
 
   .search-layout--results .search-left,
   .candidate-column {
-    padding: 32px 24px;
+    padding: 0;
   }
 
   .search-layout--results .search-input-wrap {
@@ -969,11 +1000,11 @@ button {
 
 @media (max-width: 960px) {
   .search-screen {
-    padding: 24px 16px;
+    padding: 24px 16px 24px;
   }
 
   .search-screen--results {
-    padding: 0;
+    padding: 24px 16px;
   }
 
   .search-layout {

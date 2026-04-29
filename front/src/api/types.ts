@@ -75,11 +75,15 @@ export type CandidateSearchRequest = {
 
 export type CandidateSearchResponse = {
   items: Candidate[];
+  meta?: {
+    normalized_query?: string;
+  };
   total: number;
 };
 
 export type AssistantPromptRequest = {
   current_prompt?: string;
+  decide_only?: boolean;
   message: string;
   mode?: "chat" | "agent";
 };

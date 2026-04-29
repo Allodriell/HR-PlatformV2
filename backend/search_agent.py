@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -48,6 +49,13 @@ SYSTEM_PROMPT = """
   что критерий не важен.
 - Нельзя возвращать normalized_query без изменений, если пользователь написал новое содержательное сообщение.
 - normalized_query должен звучать как итоговый запрос рекрутера, а не как история переписки.
+- normalized_query — это текст для векторного поиска по резюме. В нем не должно быть
+  технических комментариев, мета-пояснений и полей, которых пользователь не указал.
+- Не пиши в normalized_query фразы вроде "поиск специалиста", "рекрутинг одного специалиста",
+  "дополнительные требования не указаны", "уровень опыта не указан",
+  "формат занятости не указан", "локация не указана".
+- Не добавляй скобки с отсутствующими параметрами. Если параметр неизвестен,
+  просто не упоминай его.
 - Сохраняй отрицательные и мягкие ограничения: "опыт не важен", "без React", "можно junior".
 - Если пользователь говорит, что опыт, уровень, домен, зарплата или другой параметр не важен,
   не продолжай уточнять этот параметр.
@@ -79,6 +87,8 @@ REWRITE_PROMPT = """
 Правила:
 - не вставляй команду пользователя дословно;
 - не используй формулировки "дополнительные требования", "пользователь сказал", "уточнение";
+- не добавляй скобки с отсутствующими параметрами;
+- не пиши, что опыт, локация, формат занятости или другие параметры "не указаны";
 - сохрани смысл текущего запроса и новой команды;
 - если новая команда задает новую профессию или новый поиск, замени старый запрос;
 - верни строго JSON: {"normalized_query": "..."}.
@@ -109,6 +119,53 @@ def _normalize_text(value: str) -> str:
     return " ".join((value or "").lower().split())
 
 
+def _clean_normalized_query(value: str) -> str:
+    text = " ".join((value or "").strip().split())
+    if not text:
+        return ""
+
+    meta_terms = (
+        r"не\s+указа",
+        r"уров(?:е|е)нь\s+опыта",
+        r"формат\s+занятости",
+        r"локац",
+        r"дополнительн(?:ые|ых)?\s+(?:требован|услов)",
+        r"поиск\s+специалиста",
+        r"рекрутинг",
+    )
+    meta_pattern = "|".join(meta_terms)
+
+    text = re.sub(
+        rf"\s*\([^)]*(?:{meta_pattern})[^)]*\)",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    noise_patterns = [
+        r"\bпоиск\s+специалиста\b",
+        r"\bрекрутинг\s+одного\s+специалиста\b",
+        r"\bдополнительн(?:ые|ых)?\s+(?:требования|условия|требования/условия)\s+не\s+указан[ыоа]?\b",
+        r"\bуров(?:е|е)нь\s+опыта\s+не\s+указан[ао]?\b",
+        r"\bформат\s+занятости\s+не\s+указан[ао]?\b",
+        r"\bлокац(?:ия|ии|ию)\s+не\s+указан[ао]?\b",
+        r"\bне\s+указан[ыоа]?\b",
+    ]
+    for pattern in noise_patterns:
+        text = re.sub(pattern, "", text, flags=re.IGNORECASE)
+
+    text = re.sub(r"\(([^)]*)\)", r"\1", text)
+    text = re.sub(r"\s+[—-]\s*(?=[,.!?;:]|$)", "", text)
+    text = re.sub(r"\s+[—-]\s+", " — ", text)
+    text = re.sub(r"\(\s*\)", "", text)
+    text = re.sub(r"\s+([,.!?;:])", r"\1", text)
+    text = re.sub(r"([,.!?;:]){2,}", r"\1", text)
+    text = re.sub(r"\s{2,}", " ", text)
+    text = text.strip(" \t\r\n-—,.;:")
+
+    return text
+
+
 def _call_json_model(model: str, messages: list[dict[str, str]]) -> dict[str, Any]:
     request: dict[str, Any] = {
         "model": model,
@@ -127,9 +184,9 @@ def _rewrite_prompt_with_update(model: str, current_prompt: str, update: str) ->
     command = update.strip()
 
     if not current:
-        return command
+        return _clean_normalized_query(command)
     if not command:
-        return current
+        return _clean_normalized_query(current)
 
     try:
         data = _call_json_model(
@@ -145,13 +202,13 @@ def _rewrite_prompt_with_update(model: str, current_prompt: str, update: str) ->
                 },
             ],
         )
-        rewritten = str(data.get("normalized_query", "") or "").strip()
+        rewritten = _clean_normalized_query(str(data.get("normalized_query", "") or ""))
         if rewritten and _normalize_text(rewritten) != _normalize_text(current):
             return rewritten
     except Exception:
         pass
 
-    return f"{current}. {command}"
+    return _clean_normalized_query(f"{current}. {command}")
 
 
 def decide_search_next_step(message: str, current_prompt: str = "") -> SearchAgentDecision:
@@ -179,7 +236,7 @@ def decide_search_next_step(message: str, current_prompt: str = "") -> SearchAge
             {"role": "user", "content": user_content},
         ],
     )
-    normalized_query = str(data.get("normalized_query", "") or "").strip()
+    normalized_query = _clean_normalized_query(str(data.get("normalized_query", "") or ""))
     ready_to_search = bool(data.get("ready_to_search", False))
     question = str(data.get("question", "") or "").strip()
 
@@ -193,6 +250,8 @@ def decide_search_next_step(message: str, current_prompt: str = "") -> SearchAge
 
         if model_kept_old_prompt:
             normalized_query = _rewrite_prompt_with_update(model, current_prompt, text)
+
+    normalized_query = _clean_normalized_query(normalized_query)
 
     return SearchAgentDecision(
         ready_to_search=ready_to_search,
