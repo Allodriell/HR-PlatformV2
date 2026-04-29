@@ -80,14 +80,29 @@ button {
 .back-button {
   width: 40px;
   height: 40px;
+  border: 1px solid var(--color-soft-black);
   border-radius: 50%;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   justify-self: start;
+  background: transparent;
+  color: var(--text-main);
+  cursor: pointer;
+  transition:
+    background 160ms ease,
+    color 160ms ease,
+    transform 140ms ease;
+}
+
+.back-button:hover {
+  background: rgb(26 26 28 / 8%);
+}
+
+.back-button:active {
   background: var(--color-soft-black);
   color: var(--text-inverse);
-  cursor: pointer;
+  transform: scale(0.98);
 }
 
 .back-button .icon {
@@ -645,6 +660,7 @@ button {
   cursor: pointer;
   transition:
     background-color 140ms ease,
+    color 140ms ease,
     transform 140ms ease;
 }
 
@@ -653,6 +669,8 @@ button {
 }
 
 .candidate-card__more:active {
+  background: var(--color-soft-black);
+  color: var(--text-inverse);
   transform: scale(0.98);
 }
 
