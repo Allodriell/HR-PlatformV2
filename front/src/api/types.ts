@@ -89,6 +89,7 @@ export type AssistantPromptResponse = {
   answer: string;
   chips?: string[];
   conversationId?: string;
+  normalized_query?: string;
   search?: {
     candidates: Array<{
       candidate_id: number;

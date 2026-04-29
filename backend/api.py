@@ -288,6 +288,7 @@ def assistant_messages(payload: AssistantPromptRequest) -> Dict[str, Any]:
                 "answer": decision.question or "Уточните требования к кандидату.",
                 "chips": decision.chips,
                 "conversationId": None,
+                "normalized_query": decision.normalized_query or payload.message,
                 "search": None,
             }
 
@@ -298,6 +299,7 @@ def assistant_messages(payload: AssistantPromptRequest) -> Dict[str, Any]:
             "answer": _format_assistant_answer(result),
             "chips": decision.chips,
             "conversationId": None,
+            "normalized_query": query,
             "search": _search_result_to_dict(result),
         }
     except Exception as exc:

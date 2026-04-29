@@ -28,25 +28,6 @@ function toCandidateCard(candidate: Candidate): CandidateCardViewModel {
   };
 }
 
-function mergeChips(currentChips: string[], nextChips: string[]) {
-  const merged: string[] = [];
-  const seen = new Set<string>();
-
-  for (const chip of [...currentChips, ...nextChips]) {
-    const normalizedChip = chip.trim();
-    const key = normalizedChip.toLowerCase();
-
-    if (!normalizedChip || seen.has(key)) {
-      continue;
-    }
-
-    merged.push(normalizedChip);
-    seen.add(key);
-  }
-
-  return merged.slice(0, 8);
-}
-
 function HighlightedResumeText({
   highlight,
   text,
@@ -137,12 +118,38 @@ function LoadingState({ label }: { label: string }) {
   );
 }
 
+function QueryPanel({
+  isEditing,
+  onChange,
+  text,
+}: {
+  isEditing: boolean;
+  onChange: (value: string) => void;
+  text: string;
+}) {
+  return (
+    <div className="query-panel">
+      <div className="query-panel__label">Запрос</div>
+      {isEditing ? (
+        <textarea
+          className="query-panel__editor"
+          onChange={(event) => onChange(event.target.value)}
+          rows={7}
+          value={text}
+        />
+      ) : (
+        <p className="query-panel__text">{text}</p>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   const [mode, setMode] = useState<"search" | "create">("search");
   const [query, setQuery] = useState("");
+  const [draftPrompt, setDraftPrompt] = useState("");
   const [submittedPrompt, setSubmittedPrompt] = useState("");
   const [agentPrompt, setAgentPrompt] = useState("Добрый день, кого ищем сегодня?");
-  const [requirementChips, setRequirementChips] = useState<string[]>([]);
   const [isEditingPrompt, setIsEditingPrompt] = useState(false);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [selectedCandidate, setSelectedCandidate] = useState<CandidateDetailResponse | null>(null);
@@ -166,7 +173,9 @@ export default function App() {
   const [createMessage, setCreateMessage] = useState("");
 
   const hasResults = submittedPrompt.trim().length > 0;
-  const hasRequirementChips = requirementChips.length > 0;
+  const displayedPrompt = submittedPrompt || draftPrompt;
+  const hasDraftPrompt = draftPrompt.trim().length > 0;
+  const hasDisplayedPrompt = displayedPrompt.trim().length > 0;
 
   const switchMode = (nextMode: "search" | "create") => {
     setMode(nextMode);
@@ -212,12 +221,20 @@ export default function App() {
       return;
     }
 
-    if (!value.trim() && requirementChips.length > 0) {
+    const enteredText = value.trim() || query.trim();
+
+    if (!enteredText && hasDisplayedPrompt) {
       await handleForceSearch();
       return;
     }
 
-    const message = hasResults ? value : [...requirementChips, value].join(", ");
+    if (!enteredText) {
+      return;
+    }
+
+    const message = enteredText;
+    const currentPrompt = hasResults ? submittedPrompt : draftPrompt;
+
     setQuery("");
     setIsEditingPrompt(false);
     setIsLoading(true);
@@ -225,27 +242,29 @@ export default function App() {
 
     try {
       const response = await assistantApi.sendPrompt({
-        current_prompt: hasResults ? submittedPrompt : undefined,
+        current_prompt: currentPrompt || undefined,
         message,
         mode: "agent",
       });
 
-      const nextChips = mergeChips(requirementChips, response.chips ?? []);
-      setRequirementChips(nextChips);
+      const nextPrompt =
+        response.normalized_query ||
+        response.search?.normalized_query ||
+        currentPrompt ||
+        message;
 
       if (response.action === "needs_clarification") {
+        setDraftPrompt(nextPrompt);
         setAgentPrompt(response.answer);
-        if (hasResults) {
-          setSubmittedPrompt(message);
-        }
+        setSubmittedPrompt("");
         setCandidates([]);
         return;
       }
 
-      const normalizedQuery = response.search?.normalized_query || message;
+      const normalizedQuery = response.search?.normalized_query || response.normalized_query || nextPrompt;
       setSubmittedPrompt(normalizedQuery);
+      setDraftPrompt("");
       setAgentPrompt("Добрый день, кого ищем сегодня?");
-      setRequirementChips([]);
       setCandidates(
         response.search?.candidates.map((candidate) => ({
           id: String(candidate.candidate_id),
@@ -270,7 +289,7 @@ export default function App() {
   };
 
   const handleForceSearch = async () => {
-    const forcedQuery = hasResults ? submittedPrompt : [...requirementChips, query].join(", ");
+    const forcedQuery = hasResults ? submittedPrompt : draftPrompt || query;
     const normalizedForcedQuery = forcedQuery.trim();
 
     if (!normalizedForcedQuery) {
@@ -292,7 +311,7 @@ export default function App() {
       setCandidateQaAnswer("");
       setCandidateQaHistory([]);
       setHighlightedResumeQuote("");
-      setRequirementChips([]);
+      setDraftPrompt("");
       setAgentPrompt("Добрый день, кого ищем сегодня?");
     } catch (error) {
       const message =
@@ -318,8 +337,8 @@ export default function App() {
 
   const handleDelete = () => {
     setSubmittedPrompt("");
+    setDraftPrompt("");
     setAgentPrompt("Добрый день, кого ищем сегодня?");
-    setRequirementChips([]);
     setIsEditingPrompt(false);
     setCandidates([]);
     setSelectedCandidate(null);
@@ -484,26 +503,26 @@ export default function App() {
         <div className="search-left">
           {!hasResults ? (
             <header className="search-hero">
+              {hasDraftPrompt ? (
+                <QueryPanel
+                  isEditing={isEditingPrompt}
+                  onChange={setDraftPrompt}
+                  text={draftPrompt}
+                />
+              ) : null}
               <h1 className={["search-hero__title", isLoading ? "thinking-text" : ""].join(" ")}>
                 {isLoading ? "Думаю..." : agentPrompt}
               </h1>
             </header>
           ) : null}
 
-          {hasResults ? (
+          {hasDisplayedPrompt && hasResults ? (
             <section className="prompt-panel">
-              <div className="prompt-panel__card">
-                {isEditingPrompt ? (
-                  <textarea
-                    className="prompt-panel__editor"
-                    onChange={(event) => setSubmittedPrompt(event.target.value)}
-                    rows={7}
-                    value={submittedPrompt}
-                  />
-                ) : (
-                  <p className="prompt-panel__text">{submittedPrompt}</p>
-                )}
-              </div>
+              <QueryPanel
+                isEditing={isEditingPrompt}
+                onChange={setSubmittedPrompt}
+                text={displayedPrompt}
+              />
 
               <div className="prompt-panel__actions">
                 <button
@@ -545,21 +564,12 @@ export default function App() {
           ) : null}
 
           <div className="search-input-wrap">
-            <div className={["search-composer", hasRequirementChips ? "search-composer--active" : ""].join(" ")}>
-              {hasRequirementChips ? (
-                <div className="requirement-chips" aria-label="Уже указанные требования">
-                  {requirementChips.map((chip) => (
-                    <span className="requirement-chip" key={chip}>
-                      {chip}
-                    </span>
-                  ))}
-                </div>
-              ) : null}
+            <div className={["search-composer", hasDraftPrompt ? "search-composer--active" : ""].join(" ")}>
               <InputField
                 onSubmit={handleSubmit}
                 onValueChange={setQuery}
-                placeholder={hasRequirementChips ? "Нажмите Enter, чтобы начать поиск" : "Найти кандидата"}
-                submitWhenEmpty={hasRequirementChips}
+                placeholder={hasDraftPrompt ? "Ответить или начать поиск" : "Найти кандидата"}
+                submitWhenEmpty={hasDisplayedPrompt}
                 value={query}
               />
             </div>
@@ -613,20 +623,13 @@ export default function App() {
                 </article>
               </section>
             ) : null}
-            {!isLoading && !isCandidateLoading && !errorMessage && candidates.length === 0 && requirementChips.length > 0 ? (
+            {!isLoading && !isCandidateLoading && !errorMessage && candidates.length === 0 && hasDraftPrompt ? (
               <div className="candidate-column__clarification">
                 <p>{agentPrompt}</p>
-                <div className="requirement-chips requirement-chips--inline">
-                  {requirementChips.map((chip) => (
-                    <span className="requirement-chip" key={chip}>
-                      {chip}
-                    </span>
-                  ))}
-                </div>
               </div>
             ) : null}
             {!isLoading && !isCandidateLoading && !errorMessage && candidates.length === 0 ? (
-              requirementChips.length === 0 ? <p>Кандидаты не найдены.</p> : null
+              !hasDraftPrompt ? <p>Кандидаты не найдены.</p> : null
             ) : null}
             {!isLoading && !isCandidateLoading && !errorMessage && !selectedCandidate
               ? candidates.map((candidate) => (

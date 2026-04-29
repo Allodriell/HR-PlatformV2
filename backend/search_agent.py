@@ -12,37 +12,76 @@ client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
 
 
 SYSTEM_PROMPT = """
-Ты работаешь как первый HR-агент в поиске кандидатов.
+Ты работаешь как редактор HR-запроса внутри платформы поиска кандидатов.
+
+Твоя задача — не собирать теги и не навязывать фиксированную анкету.
+Представь, что normalized_query — это отдельное поле состояния в UI.
+Каждое сообщение пользователя является командой отредактировать это поле.
 
 Твоя задача:
-1) извлечь из сообщения рекрутера уже известные требования;
-2) понять, достаточно ли информации для поиска кандидатов;
-3) если информации мало — задать один короткий уточняющий вопрос;
-4) если информации достаточно — сформировать чистый поисковый запрос.
+1) понять реальную потребность рекрутера;
+2) очистить пользовательский текст от разговорного и семантического шума;
+3) сформировать нормальный поисковый запрос для векторного поиска;
+4) задать один короткий уточняющий вопрос только если без ответа запрос остается слишком неоднозначным.
 
 Если тебе передан текущий поисковый запрос и новая команда пользователя:
 - если новая команда явно задаёт новую роль или новый поиск, сформируй запрос заново;
-- если новая команда звучит как уточнение ("добавь", "ещё", "с опытом", "без", "только"),
+- если новая команда звучит как уточнение, дополнение или поправка,
   дополни или измени текущий запрос;
 - не сохраняй старую роль, если пользователь явно назвал новую роль.
+- не вставляй новую команду пользователя дословно как "дополнительные требования";
+  перепиши весь normalized_query как один цельный, аккуратный HR-запрос.
 
 Верни строго JSON:
 {
   "ready_to_search": true | false,
   "question": "один уточняющий вопрос или пустая строка",
-  "chips": ["короткие чипсы уже известных требований"],
-  "normalized_query": "чистый запрос для векторного поиска или пустая строка"
+  "chips": [],
+  "normalized_query": "текущий чистый запрос для векторного поиска"
 }
 
-Правила готовности:
-- Если есть только роль без уровня, опыта, ключевых навыков, домена или задач — информации мало.
-- Если есть роль и хотя бы 2-3 содержательных ограничения, можно искать.
-- Зарплата сама по себе не заменяет опыт или навыки.
-- Чипсы должны быть короткими: "DevOps инженер", "$300", "middle/senior", "CI/CD".
-- Не выдумывай требований, которых не было.
-- Вопрос должен быть один. Например: "Сколько опыта работы?" или "Какие ключевые навыки важны?"
-- Если в текущем запросе уже есть роль и хотя бы один содержательный критерий, чаще выбирай ready_to_search=true.
-- Не задавай больше одного уточнения подряд по одной и той же роли, если пользователь уже что-то ответил.
+Правила:
+- normalized_query заполняй всегда, даже если задаешь уточняющий вопрос.
+- Не выдумывай требований, которых пользователь не говорил.
+- Каждое новое сообщение пользователя должно повлиять на normalized_query:
+  добавить новое требование, изменить старое, убрать отмененное требование или явно зафиксировать,
+  что критерий не важен.
+- Нельзя возвращать normalized_query без изменений, если пользователь написал новое содержательное сообщение.
+- normalized_query должен звучать как итоговый запрос рекрутера, а не как история переписки.
+- Сохраняй отрицательные и мягкие ограничения: "опыт не важен", "без React", "можно junior".
+- Если пользователь говорит, что опыт, уровень, домен, зарплата или другой параметр не важен,
+  не продолжай уточнять этот параметр.
+- Если пользователь уже ответил на уточняющий вопрос, чаще выбирай ready_to_search=true.
+- Не требуй обязательного опыта, уровня, домена или количества навыков. Это не анкета.
+- Задавай вопрос только если непонятна сама роль/направление или запрос слишком общий
+  вроде "нужен человек", "кто-нибудь", "специалист".
+- Если роль понятна, можно искать даже с коротким запросом.
+- chips всегда возвращай пустым массивом [] — UI больше их не использует.
+
+Примеры:
+Пользователь: "дизайнер"
+Ответ: ready_to_search=false, question="Какой дизайнер нужен?", normalized_query="Найти дизайнера"
+
+Текущий запрос: "Найти дизайнера"
+Новая команда: "Мне нужен человек который работает с Motion и UI/UX опыт работы не так важен"
+Ответ: ready_to_search=true, question="", normalized_query="Найти дизайнера, который работает с Motion и UI/UX. Опыт работы не является жестким критерием."
+
+Пользователь: "ищу повара, главное итальянская кухня, опыт не принципиален"
+Ответ: ready_to_search=true, question="", normalized_query="Найти повара со знанием итальянской кухни. Опыт работы не является жестким критерием."
+"""
+
+REWRITE_PROMPT = """
+Ты редактор HR-запроса.
+
+Есть текущий поисковый запрос и новая команда пользователя.
+Перепиши запрос как один цельный, аккуратный HR-запрос для векторного поиска.
+
+Правила:
+- не вставляй команду пользователя дословно;
+- не используй формулировки "дополнительные требования", "пользователь сказал", "уточнение";
+- сохрани смысл текущего запроса и новой команды;
+- если новая команда задает новую профессию или новый поиск, замени старый запрос;
+- верни строго JSON: {"normalized_query": "..."}.
 """
 
 
@@ -66,9 +105,53 @@ def _parse_json_safe(text: str) -> dict[str, Any]:
         raise
 
 
-def _clean_chip(value: Any) -> str:
-    chip = str(value or "").strip()
-    return " ".join(chip.split())[:36]
+def _normalize_text(value: str) -> str:
+    return " ".join((value or "").lower().split())
+
+
+def _call_json_model(model: str, messages: list[dict[str, str]]) -> dict[str, Any]:
+    request: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "response_format": {"type": "json_object"},
+    }
+    if not model.startswith("gpt-5"):
+        request["temperature"] = 0.1
+
+    response = client.chat.completions.create(**request)
+    return _parse_json_safe(response.choices[0].message.content or "{}")
+
+
+def _rewrite_prompt_with_update(model: str, current_prompt: str, update: str) -> str:
+    current = current_prompt.strip()
+    command = update.strip()
+
+    if not current:
+        return command
+    if not command:
+        return current
+
+    try:
+        data = _call_json_model(
+            model,
+            [
+                {"role": "system", "content": REWRITE_PROMPT},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Текущий поисковый запрос:\n{current}\n\n"
+                        f"Новая команда пользователя:\n{command}"
+                    ),
+                },
+            ],
+        )
+        rewritten = str(data.get("normalized_query", "") or "").strip()
+        if rewritten and _normalize_text(rewritten) != _normalize_text(current):
+            return rewritten
+    except Exception:
+        pass
+
+    return f"{current}. {command}"
 
 
 def decide_search_next_step(message: str, current_prompt: str = "") -> SearchAgentDecision:
@@ -89,34 +172,31 @@ def decide_search_next_step(message: str, current_prompt: str = "") -> SearchAge
         )
 
     model = os.environ.get("SEARCH_AGENT_MODEL", "gpt-4.1-mini")
-    request: dict[str, Any] = {
-        "model": model,
-        "messages": [
+    data = _call_json_model(
+        model,
+        [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_content},
         ],
-        "response_format": {"type": "json_object"},
-    }
-    if not model.startswith("gpt-5"):
-        request["temperature"] = 0.1
+    )
+    normalized_query = str(data.get("normalized_query", "") or "").strip()
+    ready_to_search = bool(data.get("ready_to_search", False))
+    question = str(data.get("question", "") or "").strip()
 
-    response = client.chat.completions.create(**request)
+    if not normalized_query:
+        normalized_query = _rewrite_prompt_with_update(model, current_prompt, text)
+    elif current_prompt.strip():
+        normalized_current = _normalize_text(current_prompt)
+        normalized_query_text = _normalize_text(normalized_query)
 
-    data = _parse_json_safe(response.choices[0].message.content or "{}")
-    chips: list[str] = []
-    seen: set[str] = set()
-    for item in data.get("chips", []) or []:
-        chip = _clean_chip(item)
-        key = chip.lower()
-        if chip and key not in seen:
-            chips.append(chip)
-            seen.add(key)
-        if len(chips) >= 8:
-            break
+        model_kept_old_prompt = normalized_query_text == normalized_current
+
+        if model_kept_old_prompt:
+            normalized_query = _rewrite_prompt_with_update(model, current_prompt, text)
 
     return SearchAgentDecision(
-        ready_to_search=bool(data.get("ready_to_search", False)),
-        question=str(data.get("question", "") or "").strip(),
-        chips=chips,
-        normalized_query=str(data.get("normalized_query", "") or "").strip(),
+        ready_to_search=ready_to_search,
+        question=question,
+        chips=[],
+        normalized_query=normalized_query,
     )
