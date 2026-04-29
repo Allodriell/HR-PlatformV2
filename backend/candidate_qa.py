@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
@@ -49,8 +50,11 @@ CANDIDATE_ASSISTANT_SYSTEM_PROMPT = """
 
 Правила для evidence_quote:
 - копируй фрагмент дословно из резюме;
+- если ответ основан на резюме, evidence_quote должен быть непустым;
+- для вопросов про стек, навыки, технологии или инструменты верни предложение или абзац резюме,
+  где перечислены соответствующие навыки;
 - если прямого подтверждения нет, верни пустую строку "";
-- не делай evidence_quote длиннее 500 символов.
+- не делай evidence_quote длиннее 1000 символов.
 """
 
 
@@ -67,6 +71,87 @@ def _parse_json_safe(text: str) -> Dict[str, Any]:
         if start != -1 and end != -1 and end > start:
             return json.loads(text[start:end + 1])
         return {"answer": text, "evidence_quote": ""}
+
+
+def _normalize_for_match(value: str) -> str:
+    return " ".join((value or "").lower().split())
+
+
+def _split_resume_passages(resume_text: str) -> List[str]:
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n+", resume_text or "") if part.strip()]
+    if paragraphs:
+        return paragraphs
+    return [part.strip() for part in re.split(r"(?<=[.!?])\s+", resume_text or "") if part.strip()]
+
+
+def _extract_answer_terms(answer: str) -> List[str]:
+    terms = re.findall(r"[A-Za-z][A-Za-z0-9+#./-]{1,}|[А-Яа-яЁё][А-Яа-яЁё0-9+#./-]{3,}", answer or "")
+    stop_words = {
+        "кандидат",
+        "кандидата",
+        "резюме",
+        "указано",
+        "стек",
+        "есть",
+        "имеет",
+        "опыт",
+        "работы",
+        "работал",
+        "владеет",
+        "также",
+    }
+
+    result: List[str] = []
+    seen: set[str] = set()
+    for term in terms:
+        normalized = term.lower()
+        if normalized in stop_words or normalized in seen:
+            continue
+        result.append(term)
+        seen.add(normalized)
+    return result[:16]
+
+
+def _find_supporting_quote(
+    question: str,
+    answer: str,
+    resume_text: str,
+    tags: List[str],
+) -> str:
+    passages = _split_resume_passages(resume_text)
+    if not passages:
+        return ""
+
+    question_lower = (question or "").lower()
+    stack_like_question = any(
+        marker in question_lower
+        for marker in ("стек", "навык", "технолог", "инструмент", "умеет", "владеет")
+    )
+    terms = [tag for tag in tags if tag] + _extract_answer_terms(answer)
+
+    best_passage = ""
+    best_score = 0
+    for passage in passages:
+        normalized_passage = _normalize_for_match(passage)
+        score = 0
+        for term in terms:
+            normalized_term = _normalize_for_match(term)
+            if normalized_term and normalized_term in normalized_passage:
+                score += 3 if term in tags else 1
+        if stack_like_question and re.search(
+            r"javascript|typescript|react|next|figma|python|java|node|css|html|redux|tailwind|"
+            r"навык|стек|технолог|инструмент|владе|умею|работаю",
+            normalized_passage,
+        ):
+            score += 2
+        if score > best_score:
+            best_score = score
+            best_passage = passage
+
+    if best_score <= 0:
+        return ""
+
+    return best_passage[:1000]
 
 def fetch_candidate_meta(candidate_id: int) -> Optional[Dict[str, Any]]:
     sql = """
@@ -193,6 +278,7 @@ def answer_candidate_question(
 
     meta = context["meta"]
     resume_text = context["resume_text"]
+    tags = context.get("tags", [])
 
     messages: List[Dict[str, str]] = [
         {"role": "system", "content": CANDIDATE_ASSISTANT_SYSTEM_PROMPT},
@@ -235,6 +321,10 @@ def answer_candidate_question(
     data = _parse_json_safe(content_text)
     answer = str(data.get("answer", "") or content_text)
     evidence_quote = str(data.get("evidence_quote", "") or "")
+    if evidence_quote and _normalize_for_match(evidence_quote) not in _normalize_for_match(resume_text):
+        evidence_quote = ""
+    if not evidence_quote:
+        evidence_quote = _find_supporting_quote(question, answer, resume_text, tags)
 
     log_event(
         "candidate_answer",

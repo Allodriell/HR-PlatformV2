@@ -62,13 +62,34 @@ function HighlightedResumeText({
 
   const matchIndex = text.toLowerCase().indexOf(normalizedHighlight.toLowerCase());
 
-  if (matchIndex === -1) {
+  if (matchIndex !== -1) {
+    const before = text.slice(0, matchIndex);
+    const match = text.slice(matchIndex, matchIndex + normalizedHighlight.length);
+    const after = text.slice(matchIndex + normalizedHighlight.length);
+
+    return (
+      <>
+        {before}
+        <mark className="resume-highlight">{match}</mark>
+        {after}
+      </>
+    );
+  }
+
+  const textMap = normalizeTextForSearch(text);
+  const highlightMap = normalizeTextForSearch(normalizedHighlight);
+  const fuzzyMatchIndex = textMap.value.indexOf(highlightMap.value);
+
+  if (fuzzyMatchIndex === -1) {
     return <>{text}</>;
   }
 
-  const before = text.slice(0, matchIndex);
-  const match = text.slice(matchIndex, matchIndex + normalizedHighlight.length);
-  const after = text.slice(matchIndex + normalizedHighlight.length);
+  const matchStart = textMap.indexes[fuzzyMatchIndex] ?? 0;
+  const lastNormalizedIndex = fuzzyMatchIndex + highlightMap.value.length - 1;
+  const matchEnd = (textMap.indexes[lastNormalizedIndex] ?? matchStart) + 1;
+  const before = text.slice(0, matchStart);
+  const match = text.slice(matchStart, matchEnd);
+  const after = text.slice(matchEnd);
 
   return (
     <>
@@ -76,6 +97,43 @@ function HighlightedResumeText({
       <mark className="resume-highlight">{match}</mark>
       {after}
     </>
+  );
+}
+
+function normalizeTextForSearch(value: string) {
+  let normalized = "";
+  const indexes: number[] = [];
+  let previousWasSpace = false;
+
+  Array.from(value).forEach((char, index) => {
+    if (/\s/.test(char)) {
+      if (!previousWasSpace && normalized.length > 0) {
+        normalized += " ";
+        indexes.push(index);
+      }
+      previousWasSpace = true;
+      return;
+    }
+
+    normalized += char.toLowerCase();
+    indexes.push(index);
+    previousWasSpace = false;
+  });
+
+  return {
+    indexes,
+    value: normalized.trim(),
+  };
+}
+
+function LoadingState({ label }: { label: string }) {
+  return (
+    <div className="loading-state" role="status">
+      <p>{label}</p>
+      <div className="loading-state__bar" aria-hidden="true">
+        <span />
+      </div>
+    </div>
   );
 }
 
@@ -95,6 +153,7 @@ export default function App() {
   const [highlightedResumeQuote, setHighlightedResumeQuote] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isCandidateLoading, setIsCandidateLoading] = useState(false);
+  const [isCandidateQaLoading, setIsCandidateQaLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const [createForm, setCreateForm] = useState({
     email: "",
@@ -124,7 +183,7 @@ export default function App() {
       }
 
       setQuery("");
-      setIsLoading(true);
+      setIsCandidateQaLoading(true);
       setErrorMessage("");
 
       try {
@@ -148,7 +207,7 @@ export default function App() {
           error instanceof ApiError ? error.message : "Не удалось получить ответ по резюме.";
         setErrorMessage(message);
       } finally {
-        setIsLoading(false);
+        setIsCandidateQaLoading(false);
       }
       return;
     }
@@ -267,6 +326,7 @@ export default function App() {
     setCandidateQaAnswer("");
     setCandidateQaHistory([]);
     setHighlightedResumeQuote("");
+    setIsCandidateQaLoading(false);
     setErrorMessage("");
   };
 
@@ -280,6 +340,7 @@ export default function App() {
       setCandidateQaAnswer("");
       setCandidateQaHistory([]);
       setHighlightedResumeQuote("");
+      setIsCandidateQaLoading(false);
     } catch (error) {
       const message =
         error instanceof ApiError ? error.message : "Не удалось открыть резюме.";
@@ -363,6 +424,9 @@ export default function App() {
 
       {mode === "create" ? (
         <section className="resume-create">
+          {isCreating ? (
+            <LoadingState label="Загрузка резюме..." />
+          ) : (
           <form className="resume-form" onSubmit={handleCreateCandidate}>
             <input
               className="resume-form__control"
@@ -410,6 +474,7 @@ export default function App() {
               {isCreating ? "Индексируем..." : "Добавить резюме"}
             </button>
           </form>
+          )}
 
           {errorMessage ? <p className="form-status form-status--error">{errorMessage}</p> : null}
           {createMessage ? <p className="form-status">{createMessage}</p> : null}
@@ -419,7 +484,9 @@ export default function App() {
         <div className="search-left">
           {!hasResults ? (
             <header className="search-hero">
-              <h1 className="search-hero__title">{agentPrompt}</h1>
+              <h1 className={["search-hero__title", isLoading ? "thinking-text" : ""].join(" ")}>
+                {isLoading ? "Думаю..." : agentPrompt}
+              </h1>
             </header>
           ) : null}
 
@@ -469,6 +536,11 @@ export default function App() {
                   {candidateQaAnswer}
                 </div>
               ) : null}
+              {selectedCandidate && isCandidateQaLoading ? (
+                <div className="candidate-answer-bubble candidate-answer-bubble--loading">
+                  Ищу ответ в резюме...
+                </div>
+              ) : null}
             </section>
           ) : null}
 
@@ -496,10 +568,10 @@ export default function App() {
 
         {hasResults ? (
           <aside className={selectedCandidate ? "resume-detail-column" : "candidate-column"}>
-            {isLoading ? <p>Загрузка кандидатов...</p> : null}
-            {isCandidateLoading ? <p>Открываем резюме...</p> : null}
-            {!isLoading && errorMessage ? <p>{errorMessage}</p> : null}
-            {!isLoading && !errorMessage && selectedCandidate ? (
+            {isLoading && !selectedCandidate ? <LoadingState label="Загрузка кандидатов..." /> : null}
+            {isCandidateLoading ? <LoadingState label="Загрузка резюме..." /> : null}
+            {!isLoading && !isCandidateLoading && errorMessage ? <p>{errorMessage}</p> : null}
+            {!isCandidateLoading && !errorMessage && selectedCandidate ? (
               <section className="resume-detail">
                 <header className="resume-detail__header">
                   <div aria-hidden="true" className="resume-detail__avatar">
@@ -541,7 +613,7 @@ export default function App() {
                 </article>
               </section>
             ) : null}
-            {!isLoading && !errorMessage && candidates.length === 0 && requirementChips.length > 0 ? (
+            {!isLoading && !isCandidateLoading && !errorMessage && candidates.length === 0 && requirementChips.length > 0 ? (
               <div className="candidate-column__clarification">
                 <p>{agentPrompt}</p>
                 <div className="requirement-chips requirement-chips--inline">
@@ -553,10 +625,10 @@ export default function App() {
                 </div>
               </div>
             ) : null}
-            {!isLoading && !errorMessage && candidates.length === 0 ? (
+            {!isLoading && !isCandidateLoading && !errorMessage && candidates.length === 0 ? (
               requirementChips.length === 0 ? <p>Кандидаты не найдены.</p> : null
             ) : null}
-            {!isLoading && !errorMessage && !selectedCandidate
+            {!isLoading && !isCandidateLoading && !errorMessage && !selectedCandidate
               ? candidates.map((candidate) => (
                   <CandidateCard
                     key={candidate.id}

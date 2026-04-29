@@ -88,13 +88,14 @@ def decide_search_next_step(message: str, current_prompt: str = "") -> SearchAge
             f"Новая команда пользователя:\n{text}"
         )
 
-    model = os.environ.get("SEARCH_AGENT_MODEL", "gpt-5-mini")
+    model = os.environ.get("SEARCH_AGENT_MODEL", "gpt-4.1-mini")
     request: dict[str, Any] = {
         "model": model,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_content},
         ],
+        "response_format": {"type": "json_object"},
     }
     if not model.startswith("gpt-5"):
         request["temperature"] = 0.1
