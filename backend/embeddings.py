@@ -4,8 +4,8 @@ from openai import OpenAI
 # Клиент берёт ключ из переменной OPENAI_API_KEY
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
-EMBEDDING_MODEL = "text-embedding-3-small"
-EMBEDDING_DIM = 1536  # размерность text-embedding-3-small
+EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-large")
+EMBEDDING_DIM = int(os.environ.get("EMBEDDING_DIM", "3072"))
 
 def embed_text(text: str) -> list[float]:
     """

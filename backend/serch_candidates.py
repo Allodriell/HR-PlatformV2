@@ -129,14 +129,18 @@ def interpret_navigation_command(user_text: str, candidates_summary: str) -> Dic
         "Напомню: надо вернуть только JSON со структурой, описанной в инструкции."
     )
 
-    response = client.chat.completions.create(
-        model="gpt-4.1-mini",
-        messages=[
+    model = os.environ.get("NAVIGATION_AGENT_MODEL", "gpt-5-mini")
+    request: dict[str, Any] = {
+        "model": model,
+        "messages": [
             {"role": "system", "content": NAVIGATION_SYSTEM_PROMPT},
             {"role": "user", "content": user_content},
         ],
-        temperature=0.1,
-    )
+    }
+    if not model.startswith("gpt-5"):
+        request["temperature"] = 0.1
+
+    response = client.chat.completions.create(**request)
     raw = response.choices[0].message.content or ""
     data = _parse_json_safe(raw)
 
@@ -265,13 +269,13 @@ def aggregate_matches_by_candidate(matches: List[VectorMatch]) -> List[Candidate
 
 def fetch_candidates_info(candidate_ids: List[int]) -> Dict[int, Dict[str, Any]]:
     """
-    Загружает из БД базовую информацию по кандидату: ФИО, роль, email.
+    Загружает из БД базовую информацию по кандидату: ФИО, роль, email и теги.
     """
     if not candidate_ids:
         return {}
 
     placeholders = ", ".join(["%s"] * len(candidate_ids))
-    sql = f"""
+    candidates_sql = f"""
         SELECT candidate_id, full_name, role, email
         FROM candidate
         WHERE candidate_id IN ({placeholders})
@@ -280,8 +284,17 @@ def fetch_candidates_info(candidate_ids: List[int]) -> Dict[int, Dict[str, Any]]
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute(sql, candidate_ids)
+            cur.execute(candidates_sql, candidate_ids)
             rows = cur.fetchall()
+
+            tags_sql = f"""
+                SELECT candidate_id, tag
+                FROM candidate_tag
+                WHERE candidate_id IN ({placeholders})
+                ORDER BY candidate_id, tag
+            """
+            cur.execute(tags_sql, candidate_ids)
+            tag_rows = cur.fetchall()
     finally:
         conn.close()
 
@@ -292,7 +305,14 @@ def fetch_candidates_info(candidate_ids: List[int]) -> Dict[int, Dict[str, Any]]
             "full_name": full_name,
             "role": role,
             "email": email,
+            "tags": [],
         }
+
+    for cid, tag in tag_rows:
+        candidate = result.get(int(cid))
+        if candidate is not None:
+            candidate["tags"].append(tag)
+
     return result
 
 
@@ -387,6 +407,7 @@ def search_candidates(raw_query: str, top_k: int = 20) -> CandidateSearchResult:
                 "full_name": meta.get("full_name", f"Кандидат #{agg.candidate_id}"),
                 "role": meta.get("role", ""),
                 "email": meta.get("email", ""),
+                "tags": meta.get("tags", []),
                 "total_score": agg.total_score,
                 "best_score": agg.best_score,
                 "matches_count": agg.matches_count,

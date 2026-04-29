@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import psycopg2
+from dotenv import load_dotenv
 from fastapi import APIRouter, FastAPI, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+load_dotenv(Path(__file__).with_name(".env"))
+
 from candidate_qa import answer_candidate_question, build_candidate_resume_context
 from ingest_resume import create_candidate_and_resume
+from search_agent import decide_search_next_step
 from serch_candidates import CandidateSearchResult, search_candidates
 
 
@@ -39,6 +44,7 @@ class CandidateQuestionRequest(BaseModel):
 class AssistantPromptRequest(BaseModel):
     message: str = Field(..., min_length=1)
     mode: str = "chat"
+    current_prompt: str = ""
 
 
 app = FastAPI(
@@ -117,7 +123,7 @@ def _map_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
         "location": None,
         "score": score,
         "meta": " • ".join(meta_parts) if meta_parts else "Кандидат из базы",
-        "tags": [role] if role else [],
+        "tags": candidate.get("tags") or ([role] if role else []),
     }
 
 
@@ -180,8 +186,12 @@ def get_candidate(candidate_id: int) -> Dict[str, Any]:
         raise HTTPException(status_code=404, detail={"message": "Candidate not found"})
 
     return {
-        "candidate": context["meta"],
+        "candidate": {
+            **context["meta"],
+            "tags": context.get("tags", []),
+        },
         "resume_chunks": context["chunks"],
+        "resume_text": context["resume_text"],
     }
 
 
@@ -214,7 +224,8 @@ def create_candidate(payload: CandidateCreateRequest) -> Dict[str, Any]:
             "full_name": payload.full_name,
             "email": payload.email,
             "phone": payload.phone,
-            "role": payload.role,
+            "role": creation_result.get("role", payload.role),
+            "tags": creation_result.get("tags", []),
             "chunks_count": creation_result["chunks_count"],
         },
     }
@@ -266,9 +277,26 @@ def candidate_qa(candidate_id: int, payload: CandidateQuestionRequest) -> Dict[s
 @api_router.post("/assistant/messages")
 def assistant_messages(payload: AssistantPromptRequest) -> Dict[str, Any]:
     try:
-        result = search_candidates(payload.message, top_k=5)
+        decision = decide_search_next_step(
+            message=payload.message,
+            current_prompt=payload.current_prompt,
+        )
+
+        if not decision.ready_to_search:
+            return {
+                "action": "needs_clarification",
+                "answer": decision.question or "Уточните требования к кандидату.",
+                "chips": decision.chips,
+                "conversationId": None,
+                "search": None,
+            }
+
+        query = decision.normalized_query or payload.message
+        result = search_candidates(query, top_k=5)
         return {
+            "action": "search_results",
             "answer": _format_assistant_answer(result),
+            "chips": decision.chips,
             "conversationId": None,
             "search": _search_result_to_dict(result),
         }

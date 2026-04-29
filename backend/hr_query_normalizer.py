@@ -102,14 +102,18 @@ def normalize_hr_query(raw_query: str) -> HRQueryNormalizationResult:
             request_type="unclear",
         )
 
-    response = client.chat.completions.create(
-        model="gpt-4.1",
-        messages=[
+    model = os.environ.get("HR_QUERY_NORMALIZER_MODEL", "gpt-5-mini")
+    request: dict[str, Any] = {
+        "model": model,
+        "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": text},
         ],
-        temperature=0.1,
-    )
+    }
+    if not model.startswith("gpt-5"):
+        request["temperature"] = 0.1
+
+    response = client.chat.completions.create(**request)
 
     # В openai 2.x контент лежит здесь:
     content_text: str = response.choices[0].message.content

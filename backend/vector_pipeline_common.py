@@ -1,6 +1,5 @@
 import os
-import math
-from typing import List, Tuple
+from typing import List
 
 import psycopg2
 from pinecone import Pinecone
@@ -13,6 +12,8 @@ HR_DB_DSN = os.environ["HR_DB_DSN"]
 PINECONE_API_KEY = os.environ["PINECONE_API_KEY"]
 PINECONE_INDEX_NAME = os.environ["PINECONE_INDEX_NAME"]
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
+EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-large")
+EMBEDDING_DIM = int(os.environ.get("EMBEDDING_DIM", "3072"))
 
 pc = Pinecone(api_key=PINECONE_API_KEY)
 index = pc.Index(PINECONE_INDEX_NAME)
@@ -24,15 +25,15 @@ openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
 def get_embedding(text: str) -> List[float]:
     """
-    Получает эмбеддинг текста через OpenAI text-embedding-3-small.
+    Получает эмбеддинг текста через OpenAI.
     """
     text = text.strip()
     if not text:
         # На всякий случай возвращаем нулевой вектор
-        return [0.0] * 1536
+        return [0.0] * EMBEDDING_DIM
 
     response = openai_client.embeddings.create(
-        model="text-embedding-3-small",
+        model=EMBEDDING_MODEL,
         input=text,
     )
     return response.data[0].embedding
@@ -185,7 +186,7 @@ def upsert_resume_chunks_to_pinecone(
                         chunk_text,
                         "pinecone",                 # vector_store
                         vector_id,
-                        "text-embedding-3-small",   # embed_model
+                        EMBEDDING_MODEL,            # embed_model
                         embed_dim,                  # embed_dim
                     ),
                 )

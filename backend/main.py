@@ -6,7 +6,12 @@
 2) Поиск кандидатов с нормализацией HR-запроса и LLM-навигацией.
 """
 
+from pathlib import Path
 import sys
+
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).with_name(".env"))
 
 import ingest_resume
 import serch_candidates

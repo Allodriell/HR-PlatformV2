@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any, Dict, List, Optional
 
@@ -40,15 +41,36 @@ CANDIDATE_ASSISTANT_SYSTEM_PROMPT = """
    - если обнаруживаешь, что ранний ответ можно уточнить, аккуратно это поясни
      (например: "раньше я писал, что компания не указана, однако в другом фрагменте есть упоминание ...").
 
-Отвечай кратко, по существу, в деловом стиле.
+Верни строго валидный JSON:
+{
+  "answer": "краткий ответ HR",
+  "evidence_quote": "точная короткая цитата из резюме, которая подтверждает ответ"
+}
+
+Правила для evidence_quote:
+- копируй фрагмент дословно из резюме;
+- если прямого подтверждения нет, верни пустую строку "";
+- не делай evidence_quote длиннее 500 символов.
 """
 
 
 # ---------- работа с БД ----------
 
+
+def _parse_json_safe(text: str) -> Dict[str, Any]:
+    text = text.strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            return json.loads(text[start:end + 1])
+        return {"answer": text, "evidence_quote": ""}
+
 def fetch_candidate_meta(candidate_id: int) -> Optional[Dict[str, Any]]:
     sql = """
-        SELECT candidate_id, full_name, role, email
+        SELECT candidate_id, full_name, role, email, phone
         FROM candidate
         WHERE candidate_id = %s
     """
@@ -63,13 +85,33 @@ def fetch_candidate_meta(candidate_id: int) -> Optional[Dict[str, Any]]:
     if not row:
         return None
 
-    cand_id, full_name, role, email = row
+    cand_id, full_name, role, email, phone = row
     return {
         "candidate_id": cand_id,
         "full_name": full_name,
         "role": role,
         "email": email,
+        "phone": phone,
     }
+
+
+def fetch_candidate_tags(candidate_id: int) -> List[str]:
+    sql = """
+        SELECT tag
+        FROM candidate_tag
+        WHERE candidate_id = %s
+        ORDER BY tag
+    """
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, (candidate_id,))
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    return [row[0] for row in rows]
 
 
 def fetch_candidate_chunks(candidate_id: int) -> List[str]:
@@ -92,6 +134,29 @@ def fetch_candidate_chunks(candidate_id: int) -> List[str]:
     return [row[0] for row in rows]
 
 
+def fetch_candidate_resume_text(candidate_id: int) -> Optional[str]:
+    sql = """
+        SELECT raw_text
+        FROM resume
+        WHERE candidate_id = %s
+        ORDER BY resume_id DESC
+        LIMIT 1
+    """
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, (candidate_id,))
+            row = cur.fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        return None
+
+    return row[0]
+
+
 def build_candidate_resume_context(candidate_id: int) -> Optional[Dict[str, Any]]:
     """
     Готовит структурированный контекст кандидата для API и LLM-вопросов.
@@ -104,12 +169,11 @@ def build_candidate_resume_context(candidate_id: int) -> Optional[Dict[str, Any]
     if not chunks:
         return None
 
-    resume_text = "\n\n---\n\n".join(chunks)
-    if len(resume_text) > 15000:
-        resume_text = resume_text[:15000]
+    resume_text = fetch_candidate_resume_text(candidate_id) or "\n\n".join(chunks)
 
     return {
         "meta": meta,
+        "tags": fetch_candidate_tags(candidate_id),
         "chunks": chunks,
         "resume_text": resume_text,
     }
@@ -158,12 +222,19 @@ def answer_candidate_question(
         {"candidate_id": candidate_id, "question": question},
     )
 
-    response = client.chat.completions.create(
-        model="gpt-4.1",
-        messages=messages,
-        temperature=0.0,
-    )
-    answer = response.choices[0].message.content or ""
+    model = os.environ.get("CANDIDATE_QA_MODEL", "gpt-5.1")
+    request: Dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+    }
+    if not model.startswith("gpt-5"):
+        request["temperature"] = 0.0
+
+    response = client.chat.completions.create(**request)
+    content_text = response.choices[0].message.content or ""
+    data = _parse_json_safe(content_text)
+    answer = str(data.get("answer", "") or content_text)
+    evidence_quote = str(data.get("evidence_quote", "") or "")
 
     log_event(
         "candidate_answer",
@@ -171,12 +242,14 @@ def answer_candidate_question(
             "candidate_id": candidate_id,
             "question": question,
             "answer": answer,
+            "evidence_quote": evidence_quote,
         },
     )
 
     return {
         "candidate": meta,
         "answer": answer,
+        "evidence_quote": evidence_quote,
         "history": messages + [{"role": "assistant", "content": answer}],
     }
 
@@ -211,9 +284,7 @@ def run_candidate_qa(
         print(f"\nПо кандидату #{candidate_id} нет сохранённых чанков резюме.")
         return "same_search"
 
-    resume_text = "\n\n---\n\n".join(chunks)
-    if len(resume_text) > 15000:
-        resume_text = resume_text[:15000]
+    resume_text = fetch_candidate_resume_text(candidate_id) or "\n\n".join(chunks)
 
     print(f"\nВы смотрите кандидата #{candidate_id}: {full_name} — {role}")
     print(
@@ -247,11 +318,15 @@ def run_candidate_qa(
         """Вспомогательная функция: добавить вопрос в историю и получить ответ."""
         messages.append({"role": "user", "content": question})
 
-        response = client.chat.completions.create(
-            model="gpt-4.1",
-            messages=messages,
-            temperature=0.0,  # максимальная детерминированность
-        )
+        model = os.environ.get("CANDIDATE_QA_MODEL", "gpt-5.1")
+        request: Dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+        }
+        if not model.startswith("gpt-5"):
+            request["temperature"] = 0.0
+
+        response = client.chat.completions.create(**request)
         answer = response.choices[0].message.content or ""
         messages.append({"role": "assistant", "content": answer})
         return answer

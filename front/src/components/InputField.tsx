@@ -17,6 +17,7 @@ type InputFieldProps = {
   onSubmit?: (value: string) => void;
   onValueChange?: (value: string) => void;
   placeholder?: string;
+  submitWhenEmpty?: boolean;
   value?: string;
 };
 
@@ -29,6 +30,7 @@ export function InputField({
   onSubmit,
   onValueChange,
   placeholder = "Найти кандидата",
+  submitWhenEmpty = false,
   value: controlledValue,
 }: InputFieldProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -61,7 +63,7 @@ export function InputField({
   const isRecording = mode === "recording";
   const isAgent = mode === "agent";
   const hasTypedValue = value.trim().length > 0;
-  const shouldShowSend = mode === "typing" && hasTypedValue;
+  const shouldShowSend = (mode === "typing" && hasTypedValue) || submitWhenEmpty;
 
   const handleChange = (nextValue: string) => {
     updateValue(nextValue);
@@ -80,7 +82,7 @@ export function InputField({
   const handleSubmit = () => {
     const trimmedValue = value.trim();
 
-    if (!trimmedValue) {
+    if (!trimmedValue && !submitWhenEmpty) {
       return;
     }
 
@@ -186,7 +188,7 @@ export function InputField({
                 handleSubmit();
               }
             }}
-            placeholder={readOnly || isFocused ? "" : placeholder}
+            placeholder={readOnly ? "" : placeholder}
             readOnly={readOnly}
             value={inputValue}
           />
